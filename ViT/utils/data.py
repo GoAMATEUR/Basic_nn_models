@@ -8,14 +8,9 @@ class PatchifiedCIFAR10(datasets.CIFAR10):
         self.patch_len = patch_len
     
     def __getitem__(self, index):
-        img, target = self.data[index], self.targets[index]
-        img = Image.fromarray(img)
-        if self.transform is not None:
-            img1 = self.transform(img)
-            img2 = self.transform(img)
-        if self.target_transform is not None:
-            target = self.target_transform(target)
-        return img1, img2, target
+        # (seq_len, patch_size_flat)
+        # TODO: Implement this function
+        ...
 
 
 if __name__ == '__main__':
