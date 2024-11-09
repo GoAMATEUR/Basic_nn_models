@@ -41,7 +41,7 @@ class TransformerEncoderLayer(nn.Module):
         self.self_attention = MultiheadAttention(d_model, n_head, dropout_rate=dropout_rate)
         self.feedforward = nn.Sequential(
             nn.Linear(d_model, feedforward_dim),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Linear(feedforward_dim, d_model)
         )
         self.norm1 = nn.LayerNorm(d_model)
