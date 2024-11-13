@@ -40,6 +40,7 @@ class SinusoidalPositionalEncoding(nn.Module):
     def forward(self, x):
         # x: (batch_size,)
         x = x[:, None] * self.embedding
+        print(x.device, self.embedding.device)  
         x = torch.cat((x.sin(), x.cos()), dim=-1)
         return x
         
@@ -49,6 +50,7 @@ class MLP(nn.Module):
         super().__init__()
         self.a_dim = action_dim
         self.t_dim = t_dim
+        self.state_dim = state_dim
         
         self.time_mlp = nn.Sequential(
             SinusoidalPositionalEncoding(t_dim),
@@ -81,7 +83,10 @@ class MLP(nn.Module):
 
     def forward(self, a, t, state):
         t_emb = self.time_mlp(t)
+        print(a.shape, state.shape, t_emb.shape)
+        print(self.a_dim, self.state_dim, self.t_dim)
         x = torch.cat([a, state, t_emb], dim=-1)
+        print(x.shape)
         x = self.mid_layer(x)
         x = self.output_layer(x)
         return x
@@ -106,15 +111,16 @@ class Diffusion(nn.Module):
         self.action_dim = kwargs["action_dim"]
         self.hidden_dim = kwargs["hidden_dim"]
         self.T = kwargs["time_steps"]
+        self.device = kwargs["device"]
         
         self.model = MLP(self.state_dim, self.action_dim, self.hidden_dim, t_dim=16)
         
         # Construct alphas
         if beta_scheduler == "linear":
             betas = torch.linspace(1e-4, 2e-2, self.T, dtype=torch.float32)
-        alphas = 1 - self.betas
-        alpha_cumprod = self.alphas.cumprod(dim=0)
-        alpha_cumprod_prev = torch.cat([torch.tensor([1.]), self.alpha_cumprod[:-1]])
+        alphas = 1 - betas
+        alpha_cumprod = alphas.cumprod(dim=0)
+        alpha_cumprod_prev = torch.cat([torch.tensor([1.]), alpha_cumprod[:-1]])
         self.register_buffer("alphas", alphas)
         self.register_buffer("alpha_cumprod", alpha_cumprod)
         self.register_buffer("alpha_cumprod_prev", alpha_cumprod_prev)
@@ -136,9 +142,11 @@ class Diffusion(nn.Module):
 
         self.loss_func = Losses[loss_func]()
 
+    
+    # ================== Denoising ==================
     def forward(self, state, *args, **kwargs):
         """
-        
+        Denoise the action
         """
         return self._sample(state, *args, **kwargs)
 
@@ -150,7 +158,7 @@ class Diffusion(nn.Module):
         """
         batch_size = state.size(0)
         shape = [batch_size, self.action_dim]
-        action: torch.Tensor = self.p_smaple_loop(state, shape, *args, **kwargs)
+        action: torch.Tensor = self.p_sample_loop(state, shape, *args, **kwargs)
         return action.clamp_(-1, 1)
 
     def p_sample_loop(self, state, shape, *args, **kwargs):
@@ -165,7 +173,7 @@ class Diffusion(nn.Module):
         x_T = torch.randn(shape, device=device, requires_grad=True) # Why True?
         x_t = x_T
         for step in reversed(range(self.T)):
-            t = torch.full((batch_size), step, device=device) # to embed
+            t = torch.full((batch_size,), step, device=device) # to embed
             x_t = self.p_smaple(x, t, state)
         return x_t
 
@@ -179,7 +187,7 @@ class Diffusion(nn.Module):
         """
         model_mean, model_log_var = self.p_mean_var(x, t, state)
         noise = torch.randn_like(x) # (batch, action_dim)
-        non_zero_mask = (1.0 - (t==0).float()).reshape(x.size(8), *((1,) * (x.dim() - 1))) # (batch, 1)
+        non_zero_mask = (1.0 - (t==0).float()).reshape(x.size(0), *((1,) * (x.dim() - 1))) # (batch, 1)
         masked_noise = noise * non_zero_mask
         return model_mean + torch.exp(0.5 * model_log_var) * masked_noise 
 
@@ -220,9 +228,53 @@ class Diffusion(nn.Module):
         log_var = extract(self.posterior_var_log_clipped, t, x_t.shape)
         return mean, log_var
 
+    # ================== Training ==================
+    def loss(self, x_0, state, weights=1.0):
+        """Loss
 
+        Args:
+            x_0 (_type_): action
+            state (_type_): state
+            weights (_type_): _description_
+        """
+        batch_size = x_0.size(0)
+        # Randomly sample t
+        t = torch.randint(0, self.T, (batch_size,), device=x_0.device)
+        return self.p_losses(x_0, state, t, weights)
+
+    def p_losses(self, x_0, state, t, weights=1.0):
+        """Losses
+
+        Args:
+            x_0 (_type_): action
+            state (_type_): state
+            t (_type_): timestep
+            weights (_type_): _description_
+        """
+        noise = torch.randn_like(x_0) # epsilon
+        x_noisy = self.q_sample(x_0, t, noise) # x_t = sqrt(alpha_t) * x_0 + sqrt(1 - alpha_t) * epsilon
+        x_recon = self.model(x_noisy, t, state) # predicted noise
+        loss = self.loss_func(x_recon, noise, weights)
+        return loss
+
+    def q_sample(self, x_0, t, noise):
+        return (extract(self.sqrt_alphas_cumprod, t, x_0.shape) * x_0 
+                + extract(self.sqrt_one_minus_alphas_cumprod, t, x_0.shape) * noise)
+    
 if __name__ == "__main__":
-    pe = SinusoidalPositionalEncoding(10)
-    x = torch.arange(10)
-    print(pe(x))  
-    # print(mlp)
+    device = 'mps'
+    x = torch.randn(256, 2).to(device)
+    state = torch.randn(256, 11).to(device)
+    
+    action_dim = 2
+    state_dim = 11
+    
+    model = Diffusion(loss_func="WeightedMSELoss",
+                      state_dim=state_dim,
+                      action_dim=action_dim,
+                      hidden_dim=256,
+                      time_steps=100,
+                      device=device).to(device)
+    result = model(state)
+    
+    loss = model.loss(x, state)
