@@ -8,11 +8,11 @@ class SDEBase(abc.ABC):
         self.T = T
         self.dt = 1 / T
 
-    @abs.abstractmethod
+    @abc.abstractmethod
     def drift(self, x_t, t):
         pass
 
-    @abs.abstractmethod
+    @abc.abstractmethod
     def dispersion(self, x_t, t):
         pass
     
@@ -55,6 +55,7 @@ class SDEBase(abc.ABC):
 
 def vp_beta_schedule(T, dtype = torch.float32):
     t = np.arange(1, T + 1)
+    print(t)
     b_max = 10.
     b_min = .1
     alpha = np.exp(-b_min / T - 0.5 * (b_max - b_min) * (2 * t - 1) / T ** 2)
@@ -74,3 +75,5 @@ class MySDE(SDEBase):
     def dispersion(self, x_t, t):
         return self.sigmas[t]
         
+if __name__ == "__main__":
+    print(vp_beta_schedule(10))
